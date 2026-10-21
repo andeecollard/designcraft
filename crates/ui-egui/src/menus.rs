@@ -3494,11 +3494,14 @@ mod tests {
         if cfg!(target_os = "macos") {
             assert_eq!(shortcut_of(&app, "app.preferences").as_deref(), Some("Cmd+,"));
             assert_eq!(shortcut_of(&app, "view.frameEdges").as_deref(), Some("Ctrl+Cmd+H"));
+            assert_eq!(shortcut_of(&app, "view.highQualityDisplay").as_deref(), Some("Ctrl+Cmd+Alt+H"));
             assert!(!keys.iter().any(|(_, sc)| sc == "Cmd+H" || sc == "Cmd+K" || sc == "Cmd+M" || sc == "Cmd+Alt+H"));
         } else {
             assert_eq!(shortcut_of(&app, "app.preferences").as_deref(), Some("Cmd+K"));
             assert_eq!(shortcut_of(&app, "view.frameEdges").as_deref(), Some("Cmd+H"));
+            assert_eq!(shortcut_of(&app, "view.highQualityDisplay").as_deref(), Some("Cmd+Alt+H"));
         }
+        assert!(shortcut_of(&app, "view.highQualityDisplay").as_deref().and_then(parse_shortcut).is_some());
         assert!(parse_shortcut(SETTINGS_SHORTCUT).is_some());
         assert!(parse_shortcut(EDGES_SHORTCUT).is_some());
     }
