@@ -6,6 +6,10 @@
 pub(super) const TABLE: &[(&str, &str)] = &[
     ("1 image · drag + arrows for grid", "1 გამოსახულება · ბადის შესაქმნელად გადაათრიეთ და გამოიყენეთ ისრები"),
     ("{count} images · drag + arrows for grid", "გამოსახულებები: {count} · ბადის შესაქმნელად გადაათრიეთ და გამოიყენეთ ისრები"),
+    (
+        "Images waiting to load: {count}. Place or cancel the current images first",
+        "ჩასატვირთად მომლოდინე გამოსახულებები: {count}. ჯერ განათავსეთ ან გააუქმეთ მიმდინარე გამოსახულებები",
+    ),
     ("Image import cancelled while a dialog is open", "გამოსახულებების იმპორტი გაუქმდა, რადგან დიალოგი გახსნილია"),
     ("File", "ფაილი"),
     ("Edit", "რედაქტირება"),

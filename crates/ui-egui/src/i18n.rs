@@ -57,6 +57,16 @@ const TABLE: &[(&str, [&str; 5])] = &[
         ],
     ),
     (
+        "Images waiting to load: {count}. Place or cancel the current images first",
+        [
+            "Wartende Bilder: {count}. Platzieren oder verwerfen Sie zuerst die aktuellen Bilder",
+            "Images en attente : {count}. Importez ou annulez d’abord les images en cours",
+            "Imágenes en espera: {count}. Coloque o cancele primero las imágenes actuales",
+            "読み込み待ちの画像：{count}。先に現在の画像を配置するかキャンセルしてください",
+            "等待载入的图像：{count}。请先置入或取消当前图像",
+        ],
+    ),
+    (
         "Image import cancelled while a dialog is open",
         [
             "Bildimport bei geöffnetem Dialog abgebrochen",
