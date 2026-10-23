@@ -1031,16 +1031,18 @@ impl DesignApp {
     /// Load an ordered batch, retaining single-file import dialogs where needed.
     fn place_paths(&mut self, paths: Vec<String>) {
         let mut images = Vec::new();
+        let mut names = Vec::new();
         for path in paths {
             let image = is_cursor_image(&path);
             if image {
+                names.push(std::path::Path::new(&path).file_name().map_or_else(|| path.clone(), |n| n.to_string_lossy().to_string()));
                 images.push(json!({"path": path}));
             } else {
                 let _ = self.place_path(&path);
             }
         }
         if !images.is_empty() {
-            let _ = self.run("place.load", json!({"files": images}));
+            let _ = self.open_named_file("place.load", json!({"files": images}), names.join(", "));
         }
     }
 
@@ -1150,9 +1152,10 @@ impl DesignApp {
             if self.activate_import_target(&ImportRequest { target, purpose }).is_err() {
                 continue;
             }
+            let names = group.iter().map(|f| f.name.as_str()).collect::<Vec<_>>().join(", ");
             let sources: Vec<_> =
                 group.into_iter().map(|f| json!({"name": f.name, "base64": designcraft_engine::cmd::base64_encode(&f.bytes)})).collect();
-            let _ = self.run("place.load", json!({"files": sources}));
+            let _ = self.open_named_file("place.load", json!({"files": sources}), names);
         }
         if !was_waiting && !self.deferred_images.is_empty() {
             self.status(
@@ -1532,7 +1535,7 @@ impl DesignApp {
         self.open_file("file.place", params)
     }
 
-    /// Open (`file.open`, `file.openBytes`) or place (`file.place`) a file the user chose. A file
+    /// Open (`file.open`, `file.openBytes`) or place (`file.place`, `place.load`) a file the user chose. A file
     /// that can't be opened or placed gets an alert with the reason, as well as the status line.
     /// A successful import with warnings keeps the document and shows the warnings in an alert.
     pub fn open_file(&mut self, cmd: &str, params: Value) -> Result<Value, String> {
@@ -1548,7 +1551,7 @@ impl DesignApp {
     pub fn open_named_file(&mut self, cmd: &str, params: Value, file: String) -> Result<Value, String> {
         let r = self.run(cmd, params);
         if let Err(e) = &r {
-            let title = if cmd == "file.place" { "Can't Place the File" } else { "Can't Open the File" };
+            let title = if cmd == "file.place" || cmd == "place.load" { "Can't Place the File" } else { "Can't Open the File" };
             if self.ui.dialog.as_ref().is_some_and(|d| d.id == "findChange") {
                 self.session.reset_find_scope();
             }
@@ -2566,6 +2569,22 @@ mod tests {
         let path = std::env::temp_dir().join(format!("designcraft-ui-{}-{name}", std::process::id()));
         std::fs::write(&path, b"neither a document nor a graphic").unwrap();
         path
+    }
+
+    /// A batch of images that fails to load gets the same alert as a single placed file.
+    #[test]
+    fn a_failed_image_batch_shows_the_placement_alert() {
+        let mut app = DesignApp::new(Session::new(), Services::default());
+        app.run("file.new", json!({})).unwrap();
+        let (a, b) = (unreadable_file("a.png"), unreadable_file("b.png"));
+        app.place_paths(vec![a.to_string_lossy().to_string(), b.to_string_lossy().to_string()]);
+        let _ = (std::fs::remove_file(&a), std::fs::remove_file(&b));
+        let (title, message) = alert(&app);
+        assert_eq!(title, "Can't Place the File");
+        assert!(!message.is_empty());
+        let file = app.ui.dialog.as_ref().unwrap().fields["file"].as_str().unwrap().to_string();
+        assert!(file.contains("a.png") && file.contains("b.png"), "{file}");
+        assert!(app.session.loaded.is_none());
     }
 
     /// The open alert dialog: (title, message).

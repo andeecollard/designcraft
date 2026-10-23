@@ -1751,6 +1751,16 @@ fn place_drag_arrows_make_three_by_four_grid_and_escape_cancels() {
 }
 
 #[test]
+fn an_empty_place_cursor_says_nothing_is_loaded() {
+    for command in ["place.drop", "place.grid", "place.contactSheet"] {
+        let mut s = session();
+        let params = if command == "place.contactSheet" { json!({}) } else { json!({"rect": [0, 0, 200, 200]}) };
+        let e = s.execute(command, &params).unwrap_err().to_string();
+        assert!(e.contains("nothing loaded in the place cursor"), "{command}: {e}");
+    }
+}
+
+#[test]
 fn undoing_loaded_assets_cancels_every_placement_cursor() {
     for command in ["place.drop", "place.grid", "place.contactSheet"] {
         let mut s = session();

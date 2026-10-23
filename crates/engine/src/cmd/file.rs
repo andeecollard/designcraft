@@ -927,6 +927,9 @@ fn load_cursor(s: &mut Session, mut asset: Asset, size: (f64, f64)) -> Result<Va
 
 /// Cancel every pending image if Undo removed an asset used by the cursor.
 fn validate_place_cursor(s: &mut Session, command: &str) -> Result<()> {
+    if s.loaded.is_none() && s.loaded_queue.is_empty() {
+        return Err(bad(command, "nothing loaded in the place cursor"));
+    }
     let valid = s.loaded.is_some()
         && s.loaded.iter().chain(s.loaded_queue.iter()).all(|image| s.doc().is_ok_and(|d| d.doc.assets.contains_key(&image.asset)));
     if !valid {
