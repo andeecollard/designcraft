@@ -1166,6 +1166,18 @@ impl DesignApp {
     }
 
     /// Import one browser delivery unless a dialog would be left behind its result.
+    /// Files the host couldn't read (a browser drop, say) get the alert a file that can't be
+    /// opened or placed gets; with a dialog open, the status line. `names` are the files' names.
+    pub fn import_read_failed(&mut self, names: &[String], error: &str) {
+        let file = names.join(", ");
+        if self.ui.dialog.is_some() {
+            self.status(format!("{file}: {error}"));
+            return;
+        }
+        let title = if !names.is_empty() && names.iter().all(|n| opens_as_document(n)) { "Can't Open the File" } else { "Can't Place the File" };
+        self.ui.dialog = Some(dialogs::Dialog::new("alert", json!({"title": title, "file": file, "message": error})));
+    }
+
     fn import_delivered(&mut self, file: ImportedFile) {
         if self.ui.dialog.is_some() {
             self.status(
@@ -2585,6 +2597,22 @@ mod tests {
         let file = app.ui.dialog.as_ref().unwrap().fields["file"].as_str().unwrap().to_string();
         assert!(file.contains("a.png") && file.contains("b.png"), "{file}");
         assert!(app.session.loaded.is_none());
+    }
+
+    /// A batch the host couldn't read gets the placement alert, or the status line over a dialog.
+    #[test]
+    fn an_unreadable_batch_shows_the_import_alert() {
+        let mut app = DesignApp::new(Session::new(), Services::default());
+        app.run("file.new", json!({})).unwrap();
+        app.import_read_failed(&["a.png".into(), "b.png".into()], "couldn't read dropped file b.png");
+        assert_eq!(alert(&app), ("Can't Place the File".to_string(), "couldn't read dropped file b.png".to_string()));
+        assert_eq!(app.ui.dialog.as_ref().unwrap().fields["file"], "a.png, b.png");
+        app.ui.dialog = None;
+        app.import_read_failed(&["Brochure.idml".into()], "unreadable");
+        assert_eq!(alert(&app).0, "Can't Open the File");
+        app.import_read_failed(&["c.png".into()], "unreadable");
+        assert_eq!(alert(&app).0, "Can't Open the File", "an open dialog stays");
+        assert!(app.ui.status.contains("c.png: unreadable"), "{}", app.ui.status);
     }
 
     /// The open alert dialog: (title, message).

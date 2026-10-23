@@ -76,7 +76,7 @@ pub fn start() {
                     if has_query_flag(&query(), "sample") {
                         let _ = app.run("file.newSample", serde_json::json!({}));
                     }
-                    Ok(Box::new(WebShell { app, inbox, graphics: creator_graphics }))
+                    Ok(Box::new(WebShell { app, inbox, unread: Unread::default(), graphics: creator_graphics }))
                 }),
             )
             .await;
@@ -344,7 +344,16 @@ fn query() -> String {
 struct WebShell {
     app: DesignApp,
     inbox: Inbox,
+    /// Drops the browser couldn't read: the files' names and the error, reported by the app.
+    unread: Unread,
     graphics: GraphicsState,
+}
+
+type Unread = std::sync::Arc<std::sync::Mutex<Vec<(Vec<String>, String)>>>;
+
+/// A dropped file's name, as the app shows it.
+fn dropped_name(path: &std::path::Path) -> String {
+    path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "dropped".into())
 }
 
 impl eframe::App for WebShell {
@@ -354,13 +363,15 @@ impl eframe::App for WebShell {
             let dropped = ctx.input_mut(|i| std::mem::take(&mut i.raw.dropped_files));
             if !dropped.is_empty() {
                 let request = self.app.import_request("drop");
+                let names: Vec<String> = dropped.iter().map(|f| dropped_name(f.path())).collect();
                 let inbox = self.inbox.clone();
+                let unread = self.unread.clone();
                 let ctx = ctx.clone();
                 wasm_bindgen_futures::spawn_local(async move {
                     let files = crate::browser_policy::read_batch(dropped, |f| {
                         let request = request.clone();
                         async move {
-                            let name = f.path().file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "dropped".into());
+                            let name = dropped_name(f.path());
                             let bytes = f.bytes_async().await.map_err(|e| format!("couldn't read dropped file {name}: {e}"))?;
                             Ok::<_, String>(ImportedFile { request, name, bytes })
                         }
@@ -369,13 +380,20 @@ impl eframe::App for WebShell {
                     let files = match files {
                         Ok(files) => files,
                         Err(error) => {
+                            // The batch stays all or nothing; the app shows why it didn't arrive.
                             log::error!("{error}");
+                            unread.lock().unwrap_or_else(|e| e.into_inner()).push((names, error));
+                            ctx.request_repaint();
                             return;
                         }
                     };
                     inbox.lock().unwrap_or_else(|e| e.into_inner()).extend(files);
                     ctx.request_repaint();
                 });
+            }
+            let unread = std::mem::take(&mut *self.unread.lock().unwrap_or_else(|e| e.into_inner()));
+            for (names, error) in unread {
+                self.app.import_read_failed(&names, &error);
             }
             self.app.logic(ctx);
         });
