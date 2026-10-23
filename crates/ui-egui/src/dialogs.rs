@@ -340,7 +340,7 @@ pub fn open_print(app: &mut DesignApp) {
 /// Export the current page, with an explicit print resolution and size preview.
 pub fn open_png_export(app: &mut DesignApp) -> Result<Value, String> {
     let options = crate::menus::png_export_options(app, &json!({}))?;
-    app.ui.dialog = Some(Dialog::new("pngExport", json!({"page": options.page, "ppi": 144})));
+    app.ui.dialog = Some(Dialog::new("pngExport", json!({"page": options.page, "ppi": 144, "documentUid": app.session.active().map(|st| st.uid)})));
     Ok(Value::Null)
 }
 
@@ -354,7 +354,7 @@ fn png_export(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
             }
         }
     });
-    match png_export_params(d).and_then(|p| crate::menus::png_export_options(app, &p)) {
+    match png_export_params(app, d).and_then(|p| crate::menus::png_export_options(app, &p)) {
         Ok(o) => {
             crate::rtl::label(ui, format!("{} × {} px", o.width, o.height));
             crate::rtl::label(ui, format!("{:.1} × {:.1} mm", o.width_mm, o.height_mm));
@@ -368,7 +368,11 @@ fn png_export(app: &DesignApp, ui: &mut egui::Ui, d: &mut Dialog) {
     }
 }
 
-fn png_export_params(d: &Dialog) -> Result<Value, String> {
+fn png_export_params(app: &DesignApp, d: &Dialog) -> Result<Value, String> {
+    let uid = d.fields.get("documentUid").and_then(Value::as_u64);
+    if uid.is_none() || uid != app.session.active().map(|st| st.uid) {
+        return Err("The active document changed; reopen PNG export for this document".into());
+    }
     let ppi = d.n("ppi").filter(|n| n.is_finite()).ok_or("Resolution must be a number")?;
     Ok(json!({"page": d.fields.get("page"), "ppi": ppi}))
 }
@@ -3086,7 +3090,7 @@ pub fn confirm(app: &mut DesignApp) -> Result<Value, String> {
     }
     match d.id.as_str() {
         "pngExport" => {
-            let result = png_export_params(&d).and_then(|p| crate::menus::export_png(app, &p));
+            let result = png_export_params(app, &d).and_then(|p| crate::menus::export_png(app, &p));
             if let Err(e) = &result {
                 let mut d = d;
                 d.fields.insert("error".into(), json!(e));
@@ -9535,6 +9539,17 @@ mod tests {
         let before = d.fields.clone();
         apply_pdf_preset(&mut d, "Custom");
         assert_eq!(d.fields, before);
+    }
+
+    #[test]
+    fn png_export_dialog_rejects_a_different_document() {
+        let mut app = test_app();
+        app.services.pick_save = Some(Box::new(|_| panic!("must reject before picking a file")));
+        open_png_export(&mut app).unwrap();
+        app.session.execute("file.new", &json!({})).unwrap();
+        let error = confirm(&mut app).unwrap_err();
+        assert!(error.contains("active document changed"), "{error}");
+        assert!(app.ui.dialog.is_some());
     }
 
     #[test]
