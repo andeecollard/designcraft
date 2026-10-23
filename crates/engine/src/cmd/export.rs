@@ -525,13 +525,13 @@ fn raster_effects(it: &designcraft_doc::Item) -> bool {
         || e.directional_feather.on
 }
 
-/// A copy of `d` where spread-level objects with soft effects are 300 ppi images of their whole
+/// A copy of `d` where objects with soft effects (also inside groups) are 300 ppi images of their whole
 /// appearance (transparent around them, so they composite over what's behind).
 fn rasterize_effects(d: &designcraft_doc::Document, cache: &designcraft_compose::Cache) -> (Option<designcraft_doc::Document>, usize) {
     rasterize_where(d, cache, 300.0, true, |it| raster_effects(it) && !threaded(d, it))
 }
 
-/// A copy of `d` where the spread-level objects `pred` picks are images of their appearance at
+/// A copy of `d` where the spread items or nested group children `pred` picks are images of their appearance at
 /// `ppi` (transparent around them). With `keep_wrap`, each object also stays behind as a
 /// nonprinting [`wrap_stand_in`], so text wraps around it as before.
 fn rasterize_where(
@@ -542,8 +542,21 @@ fn rasterize_where(
     pred: impl Fn(&designcraft_doc::Item) -> bool,
 ) -> (Option<designcraft_doc::Document>, usize) {
     use designcraft_doc::{Asset, AssetId, Content, Graphic, Item, ItemId, Shape, SpreadRef};
-    let todo: Vec<(usize, ItemId)> =
-        d.spreads.iter().enumerate().flat_map(|(si, sp)| sp.items.iter().filter(|it| !it.hidden && pred(it)).map(move |it| (si, it.id))).collect();
+    let mut todo = Vec::new();
+    for (si, sp) in d.spreads.iter().enumerate() {
+        let mut stack: Vec<_> = sp.items.iter().map(|it| (&**it, 0)).collect();
+        while let Some((it, depth)) = stack.pop() {
+            if it.hidden || it.nonprinting {
+                continue;
+            }
+            if pred(it) {
+                todo.push((si, it.id));
+                // A rasterized ancestor already includes its descendants.
+            } else if depth < MAX_STAND_IN_DEPTH {
+                stack.extend(it.shown_children().map(|it| (&**it, depth + 1)));
+            }
+        }
+    }
     if todo.is_empty() {
         return (None, 0);
     }
@@ -561,7 +574,9 @@ fn rasterize_where(
         // Just this object on its spread, no paper.
         let mut solo = d.clone();
         let sp = std::sync::Arc::make_mut(&mut solo.spreads[si]);
-        sp.items.retain(|x| x.id == id);
+        // Render in the item's parent-local space. Ancestor transforms and group
+        // compositing stay on the original ancestors around the replacement image.
+        sp.items = vec![std::sync::Arc::new(it.clone())];
         for pg in &mut sp.pages {
             pg.show_parent_items = false;
         }
@@ -607,15 +622,22 @@ fn rasterize_where(
         img_item.stroke.weight = 0.0;
         img_item.alt_text = it.alt_text.clone();
         img_item.export_options = it.export_options.clone();
-        // Same place in the stacking order.
-        let osp = std::sync::Arc::make_mut(&mut out.spreads[si]);
-        if let Some(pos) = osp.items.iter().position(|x| x.id == id) {
-            osp.items[pos] = std::sync::Arc::new(img_item);
-            if keep_wrap && has_wrap(it, 0) {
-                osp.items.insert(pos, std::sync::Arc::new(wrap_stand_in(it, 0)));
-            }
-            n += 1;
+        // Same slot in the original hierarchy, leaving ancestor transforms,
+        // blending and clipping intact. Resolve again after earlier insertions.
+        let Some(mut loc) = out.find(id) else { continue };
+        let Some(pos) = loc.path.pop() else { continue };
+        let siblings = if loc.path.is_empty() {
+            &mut std::sync::Arc::make_mut(&mut out.spreads[si]).items
+        } else {
+            let Some(items) = out.item_mut_at(&loc).and_then(Item::children_mut) else { continue };
+            items
+        };
+        let Some(slot) = siblings.get_mut(pos) else { continue };
+        *slot = std::sync::Arc::new(img_item);
+        if keep_wrap && has_wrap(it, 0) {
+            siblings.insert(pos, std::sync::Arc::new(wrap_stand_in(it, 0)));
         }
+        n += 1;
     }
     (Some(out), n)
 }
@@ -1011,35 +1033,40 @@ mod text_tests {
 
     #[test]
     fn objects_with_soft_effects_keep_their_text_wrap_in_pdf() {
-        let mut s = Session::new();
-        s.execute("file.new", &json!({})).unwrap();
-        let text = "Words wrap around the objects on this page. ".repeat(60);
-        let t = s.execute("frame.create", &json!({"rect": [36, 36, 576, 756], "content": "text", "text": text, "caret": false})).unwrap()["id"]
-            .as_u64()
-            .unwrap();
-        // A feathered frame with a contour wrap of the frame itself.
-        let a = s.execute("frame.create", &json!({"rect": [100, 100, 200, 200]})).unwrap()["id"].clone();
-        s.execute("object.fill", &json!({"swatch": "[Black]", "ids": [a]})).unwrap();
-        s.execute("object.textWrap", &json!({"ids": [a], "mode": "contour", "contour": "sameAsClipping", "offset": 6})).unwrap();
-        // A feathered frame whose placed graphic has a bounding-box wrap.
-        let png = designcraft_render::Rendered { width: 40, height: 40, pixels: vec![90; 40 * 40 * 4] }.to_png();
-        let b = s.execute("frame.create", &json!({"rect": [300, 400, 400, 500]})).unwrap()["id"].as_u64().unwrap();
-        s.execute("file.place", &json!({"base64": super::super::file::base64_encode(&png), "name": "a.png", "frame": b})).unwrap();
-        s.execute("object.textWrap", &json!({"ids": [b], "content": true, "mode": "boundingBox", "offset": 6})).unwrap();
-        s.execute("object.feather", &json!({"ids": [a, b], "width": 14})).unwrap();
+        for nested in [false, true] {
+            let mut s = Session::new();
+            s.execute("file.new", &json!({})).unwrap();
+            let text = "Words wrap around the objects on this page. ".repeat(60);
+            let t = s.execute("frame.create", &json!({"rect": [36, 36, 576, 756], "content": "text", "text": text, "caret": false})).unwrap()["id"]
+                .as_u64()
+                .unwrap();
+            // A feathered frame with a contour wrap of the frame itself.
+            let a = s.execute("frame.create", &json!({"rect": [100, 100, 200, 200]})).unwrap()["id"].clone();
+            s.execute("object.fill", &json!({"swatch": "[Black]", "ids": [a]})).unwrap();
+            s.execute("object.textWrap", &json!({"ids": [a], "mode": "contour", "contour": "sameAsClipping", "offset": 6})).unwrap();
+            // A feathered frame whose placed graphic has a bounding-box wrap.
+            let png = designcraft_render::Rendered { width: 40, height: 40, pixels: vec![90; 40 * 40 * 4] }.to_png();
+            let b = s.execute("frame.create", &json!({"rect": [300, 400, 400, 500]})).unwrap()["id"].as_u64().unwrap();
+            s.execute("file.place", &json!({"base64": super::super::file::base64_encode(&png), "name": "a.png", "frame": b})).unwrap();
+            s.execute("object.textWrap", &json!({"ids": [b], "content": true, "mode": "boundingBox", "offset": 6})).unwrap();
+            s.execute("object.feather", &json!({"ids": [a, b], "width": 14})).unwrap();
 
-        let d = &s.doc().unwrap().doc;
-        let sid = d.item(designcraft_doc::ItemId(t)).and_then(|it| it.text_frame()).unwrap().story;
-        let before = designcraft_compose::frame_specs(d, sid)[0].exclusions.clone();
-        assert_eq!(before.len(), 2);
-        let (fx, n) = super::rasterize_effects(d, &s.cache);
-        assert_eq!(n, 2);
-        let fx = fx.unwrap();
-        assert_eq!(designcraft_compose::frame_specs(&fx, sid)[0].exclusions, before);
-        // The objects that keep the wrap don't print; their images do.
-        let sp = &fx.spreads[0];
-        assert_eq!(sp.items.iter().filter(|it| it.nonprinting).count(), 2);
-        assert_eq!(sp.items.iter().filter(|it| !it.nonprinting && it.graphic().is_some()).count(), 2);
+            if nested {
+                s.execute("object.group", &json!({"ids":[a,b]})).unwrap();
+            }
+            let d = &s.doc().unwrap().doc;
+            let sid = d.item(designcraft_doc::ItemId(t)).and_then(|it| it.text_frame()).unwrap().story;
+            let before = designcraft_compose::frame_specs(d, sid)[0].exclusions.clone();
+            assert_eq!(before.len(), 2);
+            let (fx, n) = super::rasterize_effects(d, &s.cache);
+            assert_eq!(n, 2);
+            let fx = fx.unwrap();
+            assert_eq!(designcraft_compose::frame_specs(&fx, sid)[0].exclusions, before);
+            // The objects that keep the wrap don't print; their images do.
+            let items: Vec<_> = fx.all_items().into_iter().filter_map(|id| fx.item(id)).collect();
+            assert_eq!(items.iter().filter(|it| it.nonprinting).count(), 2);
+            assert_eq!(items.iter().filter(|it| !it.nonprinting && it.graphic().is_some()).count(), 2);
+        }
     }
 
     #[test]
