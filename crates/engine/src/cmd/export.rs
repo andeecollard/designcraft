@@ -127,7 +127,7 @@ fn export_pptx(s: &mut Session, p: &Value) -> Result<Value> {
     // Object Export Options › Rasterize, and what PowerPoint has no objects for (a threaded frame
     // stays text: a picture of it would drop the rest of its story).
     let auto = p.get("rasterize").and_then(Value::as_bool).unwrap_or(true);
-    let (raster, rasterized) = rasterize_where(&st.doc, &s.cache, 300.0, true, |it| {
+    let (raster, rasterized, _) = rasterize_where(&st.doc, &s.cache, 300.0, true, |it| {
         !threaded(&st.doc, it) && (it.export_options.rasterize || (auto && designcraft_pptx::needs_raster(&st.doc, it)))
     });
     let doc: &designcraft_doc::Document = raster.as_ref().unwrap_or(&st.doc);
@@ -245,7 +245,7 @@ fn embedded_fonts(d: &designcraft_doc::Document, warnings: &mut Vec<String>) -> 
 fn export_epub(s: &mut Session, p: &Value) -> Result<Value> {
     let st = s.doc()?;
     // Object Export Options › Rasterize: those objects go in as images.
-    let (raster, _) = rasterize_where(&st.doc, &s.cache, 144.0, false, |it| it.export_options.rasterize && !threaded(&st.doc, it));
+    let (raster, _, _) = rasterize_where(&st.doc, &s.cache, 144.0, false, |it| it.export_options.rasterize && !threaded(&st.doc, it));
     let epub_doc: &designcraft_doc::Document = raster.as_ref().unwrap_or(&st.doc);
     let fixed = p.get("fixedLayout").and_then(Value::as_bool).unwrap_or(false);
     let want_cover = p.get("cover").and_then(Value::as_bool).unwrap_or(false);
@@ -527,7 +527,7 @@ fn raster_effects(it: &designcraft_doc::Item) -> bool {
 
 /// A copy of `d` where objects with soft effects (also inside groups) are 300 ppi images of their whole
 /// appearance (transparent around them, so they composite over what's behind).
-fn rasterize_effects(d: &designcraft_doc::Document, cache: &designcraft_compose::Cache) -> (Option<designcraft_doc::Document>, usize) {
+fn rasterize_effects(d: &designcraft_doc::Document, cache: &designcraft_compose::Cache) -> (Option<designcraft_doc::Document>, usize, bool) {
     rasterize_where(d, cache, 300.0, true, |it| raster_effects(it) && !threaded(d, it))
 }
 
@@ -540,11 +540,12 @@ fn rasterize_where(
     ppi: f64,
     keep_wrap: bool,
     pred: impl Fn(&designcraft_doc::Item) -> bool,
-) -> (Option<designcraft_doc::Document>, usize) {
+) -> (Option<designcraft_doc::Document>, usize, bool) {
     use designcraft_doc::{Asset, AssetId, Content, Graphic, Item, ItemId, Shape, SpreadRef};
     let mut todo = Vec::new();
     for (si, sp) in d.spreads.iter().enumerate() {
-        let mut stack: Vec<_> = sp.items.iter().map(|it| (&**it, 0)).collect();
+        let mut stack: Vec<_> =
+            sp.items.iter().filter(|it| d.layer(it.layer).is_some_and(|l| l.visible && l.printable)).map(|it| (&**it, 0)).collect();
         while let Some((it, depth)) = stack.pop() {
             if it.hidden || it.nonprinting {
                 continue;
@@ -558,36 +559,31 @@ fn rasterize_where(
         }
     }
     if todo.is_empty() {
-        return (None, 0);
+        return (None, 0, false);
     }
     let mut out = d.clone();
     let mut rr = designcraft_render::Renderer::new();
     rr.threads = designcraft_render::default_threads();
     let k = ppi / 72.0;
     let mut n = 0;
+    let mut overprint = false;
     for (si, id) in todo {
         let Some(it) = d.item(id) else { continue };
         let reach = it.bounds().inflate(
             designcraft_render::effect_outset(it) + it.stroke.extent() + 2.0,
             designcraft_render::effect_outset(it) + it.stroke.extent() + 2.0,
         );
-        // Just this object on its spread, no paper.
-        let mut solo = d.clone();
-        let sp = std::sync::Arc::make_mut(&mut solo.spreads[si]);
-        // Render in the item's parent-local space. Ancestor transforms and group
-        // compositing stay on the original ancestors around the replacement image.
-        sp.items = vec![std::sync::Arc::new(it.clone())];
-        for pg in &mut sp.pages {
-            pg.show_parent_items = false;
-        }
+        // Keep all story frames, wrap obstacles and page context available to composition.
+        // The renderer captures just this item, in its parent-local coordinate space.
         let (w, h) = ((reach.width() * k).ceil().max(1.0) as u32, (reach.height() * k).ceil().max(1.0) as u32);
         if w as u64 * h as u64 > 60_000_000 {
             continue;
         }
         let view = designcraft_geom::Affine::scale(k) * designcraft_geom::Affine::translate((-reach.x0, -reach.y0));
-        let opts = designcraft_render::RenderOptions { paper: false, background: None, printing_only: true, ..Default::default() };
+        let opts =
+            designcraft_render::RenderOptions { paper: false, background: None, printing_only: true, isolated_item: Some(id), ..Default::default() };
         let img = rr.render(
-            &solo,
+            d,
             cache,
             &[designcraft_render::Placed { spread: SpreadRef::Doc(si), xf: designcraft_geom::Affine::translate(designcraft_geom::Vec2::ZERO) }],
             w,
@@ -620,6 +616,7 @@ fn rasterize_where(
             fill: Default::default(),
         });
         img_item.stroke.weight = 0.0;
+        img_item.blend = it.blend;
         img_item.alt_text = it.alt_text.clone();
         img_item.export_options = it.export_options.clone();
         // Same slot in the original hierarchy, leaving ancestor transforms,
@@ -634,12 +631,67 @@ fn rasterize_where(
         };
         let Some(slot) = siblings.get_mut(pos) else { continue };
         *slot = std::sync::Arc::new(img_item);
-        if keep_wrap && has_wrap(it, 0) {
+        if contains_text(it, 0) {
+            // Composition must still find the replaced frames, including frames before
+            // and after this group in a threaded story. Nonprinting skips the whole tree.
+            let mut stand_in = it.clone();
+            stand_in.nonprinting = true;
+            siblings.insert(pos, std::sync::Arc::new(stand_in));
+        } else if keep_wrap && has_wrap(it, 0) {
             siblings.insert(pos, std::sync::Arc::new(wrap_stand_in(it, 0)));
         }
+        overprint |= painted_overprint(d, it, 0);
         n += 1;
     }
-    (Some(out), n)
+    (Some(out), n, overprint)
+}
+
+/// Text frames retained for layout after their visible appearance becomes an image.
+fn contains_text(it: &designcraft_doc::Item, depth: usize) -> bool {
+    depth <= MAX_STAND_IN_DEPTH && (it.text_frame().is_some() || it.children().iter().any(|c| contains_text(c, depth + 1)))
+}
+
+/// Unsupported object-paint overprint must remain visible when the paint becomes pixels.
+/// Match the PDF backend's painted-gap rules (solid and clipped dashed strokes have no gap).
+fn painted_overprint(d: &designcraft_doc::Document, it: &designcraft_doc::Item, depth: usize) -> bool {
+    use designcraft_doc::{StrokeAlign, StrokeType};
+    if depth > MAX_STAND_IN_DEPTH || it.hidden || it.nonprinting {
+        return false;
+    }
+    if it.shown_children().any(|c| painted_overprint(d, c, depth + 1)) {
+        return true;
+    }
+    if (!it.children().is_empty() && !it.has_nested_items()) || it.path.is_empty() {
+        return false;
+    }
+    let paint =
+        |name: &str, tint: f32| d.resolve_color(name, tint).is_some() || designcraft_color::swatch::resolve_gradient(&d.swatches, name).is_some();
+    if it.fill.overprint && !it.fill.is_none() && paint(&it.fill.swatch, it.fill.tint) {
+        return true;
+    }
+    let st = &it.stroke;
+    if st.is_none() || !paint(&st.swatch, st.tint) {
+        return false;
+    }
+    if st.overprint {
+        return true;
+    }
+    if !st.gap_overprint || d.resolve_color(&st.gap_swatch, st.gap_tint).is_none() {
+        return false;
+    }
+    let kind = d.stroke_kind(&st.kind);
+    if kind.bands().is_some() || matches!(kind, StrokeType::Wavy | StrokeType::Hashed) {
+        return true;
+    }
+    if it.path.is_closed() && st.align != StrokeAlign::Center {
+        return false;
+    }
+    let length = designcraft_doc::path_length_bound(&it.path.to_bezpath());
+    match kind {
+        StrokeType::Dashed { pattern } => StrokeType::expandable_dashes(&pattern, length),
+        StrokeType::Dotted => StrokeType::expandable_dashes(&[0.0, st.weight * 2.0], length),
+        _ => false,
+    }
 }
 
 /// Whether `it`, its placed graphic or an item in it wraps text.
@@ -749,12 +801,15 @@ fn export_pdf(s: &mut Session, p: &Value) -> Result<Value> {
     let base: &designcraft_doc::Document = flattened.as_ref().map_or(&st.doc, |f| &f.0);
     let (layered, layer_count) = rasterize_layered(base)?;
     let base2: &designcraft_doc::Document = layered.as_ref().unwrap_or(base);
-    let (fx_doc, fx_count) = rasterize_effects(base2, &s.cache);
+    let (fx_doc, fx_count, overprint) = rasterize_effects(base2, &s.cache);
     let doc: &designcraft_doc::Document = fx_doc.as_ref().unwrap_or(base2);
     let boxed = super::interchange::with_pdf_boxes(doc);
     let doc: &designcraft_doc::Document = &boxed;
     let r = designcraft_pdf::export_pdf_with_report(doc, &s.cache, &opts).map_err(|e| EngineError::Other(e.to_string()))?;
     let mut r = r;
+    if overprint && !r.warnings.iter().any(|w| w == "overprint is not exported yet") {
+        r.warnings.push("overprint is not exported yet".into());
+    }
     // Transparency Blend Space: the page group of pages with transparency.
     let spreads = designcraft_pdf::sheet_spreads(doc, &opts);
     let blended: Vec<bool> = spreads.iter().map(|si| doc.spreads.get(*si).is_some_and(|sp| sp.items.iter().any(|it| transparent(it)))).collect();
@@ -1032,6 +1087,73 @@ mod text_tests {
     }
 
     #[test]
+    fn rasterized_group_preserves_thread_composition_and_captured_middle_frame() {
+        use designcraft_doc::{ItemId, SpreadRef};
+        use designcraft_geom::{Affine, Vec2};
+        for nested in [false, true] {
+            let mut s = Session::new();
+            s.execute("file.new", &json!({"width":300,"height":100})).unwrap();
+            s.execute("edit.transparencyBlendSpace", &json!({"space":"rgb"})).unwrap();
+            let mut frames = Vec::new();
+            for x in [10, 110, 210] {
+                let text =
+                    if frames.is_empty() { "First Second Third Fourth Fifth Sixth Seventh Eighth Ninth Tenth ".repeat(40) } else { String::new() };
+                frames.push(
+                    s.execute("frame.create", &json!({"rect":[x,10,x+80,90],"content":"text","text":text,"caret":false})).unwrap()["id"]
+                        .as_u64()
+                        .unwrap(),
+                );
+            }
+            for pair in frames.windows(2) {
+                s.execute("text.thread", &json!({"from":pair[0],"to":pair[1]})).unwrap();
+            }
+            let mark = s.execute("frame.create", &json!({"rect":[110,5,115,8]})).unwrap()["id"].clone();
+            let group = s.execute("object.group", &json!({"ids":[frames[1],mark]})).unwrap()["id"].as_u64().unwrap();
+            s.execute("object.transparencyGroup", &json!({"ids":[group],"knockout":true})).unwrap();
+            if nested {
+                let mark = s.execute("frame.create", &json!({"rect":[195,5,198,8]})).unwrap()["id"].clone();
+                let outer = s.execute("object.group", &json!({"ids":[group,mark]})).unwrap()["id"].clone();
+                s.execute("transform.move", &json!({"ids":[outer],"dx":13,"dy":2})).unwrap();
+                s.execute("transform.scale", &json!({"ids":[outer],"sx":0.9,"sy":0.9})).unwrap();
+            }
+            let d = &s.doc().unwrap().doc;
+            let story = d.item(ItemId(frames[0])).unwrap().text_frame().unwrap().story;
+            let composed = s.cache.get(d, story, None);
+            assert_eq!(composed.frames.len(), 3);
+            assert!(composed.frames[1].range.start > 0 && composed.frames[2].range.start > composed.frames[1].range.start);
+            let it = d.item(ItemId(group)).unwrap();
+            let reach = it.bounds().inflate(
+                designcraft_render::effect_outset(it) + it.stroke.extent() + 2.0,
+                designcraft_render::effect_outset(it) + it.stroke.extent() + 2.0,
+            );
+            let k = 300.0 / 72.0;
+            let (w, h) = ((reach.width() * k).ceil() as u32, (reach.height() * k).ceil() as u32);
+            let mut renderer = designcraft_render::Renderer::new();
+            let hidden = frames.iter().filter(|id| **id != frames[1]).map(|id| ItemId(*id)).collect();
+            let parent = d.parent_xf(&d.find(ItemId(group)).unwrap());
+            let expected = renderer.render(
+                d,
+                &s.cache,
+                &[designcraft_render::Placed { spread: SpreadRef::Doc(0), xf: Affine::translate(Vec2::ZERO) }],
+                w,
+                h,
+                Affine::scale(k) * Affine::translate((-reach.x0, -reach.y0)) * parent.inverse(),
+                &designcraft_render::RenderOptions { paper: false, printing_only: true, hidden, ..Default::default() },
+            );
+            let (fx, n, _) = super::rasterize_effects(d, &s.cache);
+            assert_eq!(n, 1);
+            let fx = fx.unwrap();
+            let after = s.cache.get(&fx, story, None);
+            assert_eq!(
+                after.frames.iter().map(|f| (f.frame, f.range.clone())).collect::<Vec<_>>(),
+                composed.frames.iter().map(|f| (f.frame, f.range.clone())).collect::<Vec<_>>()
+            );
+            let asset = fx.assets.values().find(|a| a.name.starts_with("effects-")).unwrap();
+            assert_eq!(asset.data.as_slice(), expected.to_png(), "captured text must keep its original story offset, nested={nested}");
+        }
+    }
+
+    #[test]
     fn objects_with_soft_effects_keep_their_text_wrap_in_pdf() {
         for nested in [false, true] {
             let mut s = Session::new();
@@ -1058,7 +1180,7 @@ mod text_tests {
             let sid = d.item(designcraft_doc::ItemId(t)).and_then(|it| it.text_frame()).unwrap().story;
             let before = designcraft_compose::frame_specs(d, sid)[0].exclusions.clone();
             assert_eq!(before.len(), 2);
-            let (fx, n) = super::rasterize_effects(d, &s.cache);
+            let (fx, n, _) = super::rasterize_effects(d, &s.cache);
             assert_eq!(n, 2);
             let fx = fx.unwrap();
             assert_eq!(designcraft_compose::frame_specs(&fx, sid)[0].exclusions, before);

@@ -11,6 +11,10 @@
 
 DesignCraft aims at full Adobe InDesign parity — and to be better: faster, open (documented JSON format + IDML), scriptable by agents (MCP), and available on the web.
 
+- **2026-10-23** · PDF effect captures retain full story context and nonprinting layout
+  frames, preserve the captured item’s blend mode, and retain descendant overprint diagnostics.
+  Synthetic regressions reproduce all three review findings before the fix.
+
 ## Status (2026-10-01)
 
 **Working today**
