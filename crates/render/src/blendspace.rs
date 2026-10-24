@@ -178,17 +178,12 @@ fn pipeline(doc: &Document, sr: SpreadRef, opts: &RenderOptions) -> Pipeline {
     }
     let Some(sp) = doc.spread(sr) else { return Pipeline::Rgb };
     let mut transparent = false;
-    let mut inspect = |item: &Item| {
-        if !doc.layer(item.layer).is_some_and(|l| l.visible && (!opts.printing_only || l.printable)) {
-            return true;
-        }
-        inspect_item(doc, item, opts, 0, &mut transparent)
-    };
     if let Some(id) = opts.isolated_item {
-        let Some(item) = doc.find(id).filter(|loc| loc.spread == sr).and_then(|loc| doc.item_at(&loc)) else { return Pipeline::Rgb };
+        // Its layer is its top-level item's (see `isolated_target`), not its own.
+        let Some(item) = crate::isolated_target(doc, sr, id, opts) else { return Pipeline::Rgb };
         let mut captured = item.clone();
         captured.blend = DcBlend::Normal;
-        return if !inspect(&captured) {
+        return if !inspect_item(doc, &captured, opts, 0, &mut transparent) {
             Pipeline::Proof
         } else if transparent {
             Pipeline::Cmyk
@@ -196,6 +191,12 @@ fn pipeline(doc: &Document, sr: SpreadRef, opts: &RenderOptions) -> Pipeline {
             Pipeline::Rgb
         };
     }
+    let mut inspect = |item: &Item| {
+        if !doc.layer(item.layer).is_some_and(|l| l.visible && (!opts.printing_only || l.printable)) {
+            return true;
+        }
+        inspect_item(doc, item, opts, 0, &mut transparent)
+    };
     for item in &sp.items {
         if !inspect(item) {
             return Pipeline::Proof;
@@ -500,6 +501,42 @@ mod tests {
         );
         assert_eq!(capture.cmyk_passes, 2, "capture must use the existing ink-channel pipeline");
         assert_eq!(actual.pixels, expected.pixels, "only the selected subtree paints; other document content remains available for layout");
+    }
+
+    #[test]
+    fn isolated_capture_of_a_group_child_follows_the_groups_layer() {
+        for blend_space in [designcraft_doc::BlendSpace::Rgb, designcraft_doc::BlendSpace::Cmyk] {
+            let mut doc = document();
+            doc.settings.blend_space = blend_space;
+            // Grouping keeps each child's layer; the group takes the first child's. Normal
+            // drawing follows the group's layer only, so the capture must too.
+            let hidden = designcraft_doc::LayerId(doc.alloc());
+            let mut layer = doc.layers[0].clone();
+            (layer.id, layer.name, layer.visible) = (hidden, "Hidden".into(), false);
+            doc.layers.push(layer);
+            let sibling = rectangle(&mut doc, SpreadRef::Doc(0), Rect::new(0.0, 0.0, 20.0, 20.0), "Lilac", DcBlend::Normal);
+            let child = rectangle(&mut doc, SpreadRef::Doc(0), Rect::new(40.0, 40.0, 100.0, 100.0), "Lilac", DcBlend::Multiply);
+            doc.item_mut(child).unwrap().layer = hidden;
+            let items = vec![doc.remove_item(sibling).unwrap(), doc.remove_item(child).unwrap()];
+            let mut group = Item::new(ItemId(doc.alloc()), doc.default_layer(), Shape::Group, Default::default());
+            group.content = Content::Group { items };
+            doc.insert_item(SpreadRef::Doc(0), group, None).unwrap();
+            let placements = [Placed { spread: SpreadRef::Doc(0), xf: Affine::IDENTITY }];
+            let shown = Renderer::new().render(
+                &doc,
+                &Cache::new(),
+                &placements,
+                160,
+                120,
+                Affine::IDENTITY,
+                &RenderOptions { paper: false, ..Default::default() },
+            );
+            assert!(shown.pixel(70, 70)[3] > 0, "{blend_space:?}: the child shows through its group's layer");
+            let opts = RenderOptions { paper: false, blend_space_view: true, printing_only: true, isolated_item: Some(child), ..Default::default() };
+            let captured = Renderer::new().render(&doc, &Cache::new(), &placements, 160, 120, Affine::IDENTITY, &opts);
+            assert!(captured.pixel(70, 70)[3] > 0, "{blend_space:?}: the capture must not be blank");
+            assert_eq!(captured.pixel(10, 10)[3], 0, "{blend_space:?}: only the selected child paints");
+        }
     }
 
     #[test]

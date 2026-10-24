@@ -445,12 +445,7 @@ impl Renderer {
                 self.draw_cmyk_spread(ctx, f, sr);
                 return;
             }
-            if let Some(it) = doc
-                .find(id)
-                .filter(|loc| loc.spread == sr)
-                .and_then(|loc| doc.item_at(&loc))
-                .filter(|it| doc.layer(it.layer).is_some_and(|l| l.visible && (!f.opts.printing_only || l.printable)))
-            {
+            if let Some(it) = isolated_target(doc, sr, id, f.opts) {
                 let mut captured = it.clone();
                 captured.blend = DcBlend::Normal;
                 self.draw_item(ctx, f, &captured, Affine::IDENTITY, ShownOn::Own);
@@ -1028,6 +1023,15 @@ fn plate_pixmap(pm: &std::sync::Arc<vello_cpu::Pixmap>, plate: u8) -> std::sync:
         }
     }
     out
+}
+
+/// The item an isolated render captures, if it is on `sr` and its layer shows. The layer is the
+/// top-level item's: a group's children keep their own layers, but normal drawing follows only
+/// the group's, so a nested child on a hidden layer still shows through a visible group.
+pub(crate) fn isolated_target<'a>(doc: &'a Document, sr: SpreadRef, id: designcraft_doc::ItemId, opts: &RenderOptions) -> Option<&'a Item> {
+    let loc = doc.find(id).filter(|loc| loc.spread == sr)?;
+    let top = doc.spread(sr)?.items.get(*loc.path.first()?)?;
+    doc.layer(top.layer).is_some_and(|l| l.visible && (!opts.printing_only || l.printable)).then(|| doc.item_at(&loc)).flatten()
 }
 
 fn rect_overlaps(a: Rect, b: Rect) -> bool {

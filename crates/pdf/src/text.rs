@@ -484,7 +484,7 @@ impl Exporter<'_> {
             return;
         }
         if st.overprint_fill || st.overprint_stroke {
-            self.warn("overprint is not exported yet");
+            self.warn(crate::OVERPRINT_WARNING);
         }
         // Stroke behind fill: a double-width stroke first, as outlines so the text is not
         // duplicated, then the fill over its inner half. With no fill, the stroke is clipped

@@ -41,6 +41,10 @@ pub use export::{BookletKind, BookletOptions, booklet_pairs, export_booklet, exp
 pub use pdfx::{check_pdfx4, cmyk_group_spaces, has_rgb_groups, make_pdfx4};
 pub use transitions::{add_blend_space, add_catalog_entries, add_page_entries, add_transitions};
 
+/// The export warning for overprint, which isn't written to the PDF yet. Shared so callers that
+/// add it themselves (for overprint lost in rasterized captures) don't report it twice.
+pub const OVERPRINT_WARNING: &str = "overprint is not exported yet";
+
 /// PDF standard to target.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Standard {

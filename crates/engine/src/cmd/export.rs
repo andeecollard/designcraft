@@ -807,8 +807,8 @@ fn export_pdf(s: &mut Session, p: &Value) -> Result<Value> {
     let doc: &designcraft_doc::Document = &boxed;
     let r = designcraft_pdf::export_pdf_with_report(doc, &s.cache, &opts).map_err(|e| EngineError::Other(e.to_string()))?;
     let mut r = r;
-    if overprint && !r.warnings.iter().any(|w| w == "overprint is not exported yet") {
-        r.warnings.push("overprint is not exported yet".into());
+    if overprint && !r.warnings.iter().any(|w| w == designcraft_pdf::OVERPRINT_WARNING) {
+        r.warnings.push(designcraft_pdf::OVERPRINT_WARNING.into());
     }
     // Transparency Blend Space: the page group of pages with transparency.
     let spreads = designcraft_pdf::sheet_spreads(doc, &opts);

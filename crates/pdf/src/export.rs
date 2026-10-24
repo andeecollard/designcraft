@@ -949,7 +949,7 @@ impl Exporter<'_> {
             && let Some(paint) = self.fill_paint(&it.fill, bp.bounding_box())
         {
             if it.fill.overprint {
-                self.warn("overprint is not exported yet");
+                self.warn(crate::OVERPRINT_WARNING);
             }
             s.set_stroke(None);
             s.set_fill(Some(Fill { paint, opacity: NormalizedF32::ONE, rule: FillRule::NonZero }));
@@ -1144,7 +1144,7 @@ impl Exporter<'_> {
             c.into()
         };
         if st.overprint {
-            self.warn("overprint is not exported yet");
+            self.warn(crate::OVERPRINT_WARNING);
         }
         let closed = it.path.is_closed();
         let mut cap = match st.cap {
@@ -1162,7 +1162,7 @@ impl Exporter<'_> {
                 && st.gap_swatch != designcraft_color::swatch::NONE
             {
                 if st.gap_overprint {
-                    self.warn("overprint is not exported yet");
+                    self.warn(crate::OVERPRINT_WARNING);
                 }
                 s.set_stroke(Some(Stroke { paint: g.into(), width: st.weight as f32, opacity: NormalizedF32::ONE, ..Default::default() }));
                 s.set_fill(None);
@@ -1220,7 +1220,7 @@ impl Exporter<'_> {
         {
             // Gap colour under dashes and dots.
             if st.gap_overprint {
-                self.warn("overprint is not exported yet");
+                self.warn(crate::OVERPRINT_WARNING);
             }
             s.set_stroke(Some(Stroke { paint: g.into(), width: width as f32, opacity: NormalizedF32::ONE, ..Default::default() }));
             s.draw_path(path);
