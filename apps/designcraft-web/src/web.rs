@@ -392,10 +392,7 @@ impl eframe::App for WebShell {
                 });
             }
             let unread = std::mem::take(&mut *self.unread.lock().unwrap_or_else(|e| e.into_inner()));
-            for (names, error) in unread {
-                self.app.import_read_failed(&names, &error);
-            }
-            self.app.logic(ctx);
+            crate::browser_policy::logic_with_read_failures(&mut self.app, ctx, unread);
         });
     }
 

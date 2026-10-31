@@ -12,7 +12,7 @@ For larger selections, choose **File > Place Contact Sheet…** after loading th
 
 A single selected file retains the normal Place behavior, including filling a selected frame and PDF import options. Image batches support up to 1000 images. Rows and columns each range from 1 to 100. A batch containing an unreadable image fails without replacing the existing queue or changing the document. An invalid grid or contact-sheet area also leaves the document and queue unchanged.
 
-Dropped images always load into the document they were dropped on, even when the same drop also opens a layout. A placement cursor belongs to one document: images that arrive for another document (for example from a second web browser drop) wait until the current images are placed or cancelled, and the status bar says how many are waiting. If their document closes meanwhile, they are cancelled.
+Dropped images always load into the document they were dropped on, even when the same drop also opens a layout. A placement cursor belongs to one document: images that arrive for another document (for example from a second web browser drop) wait until the current images are placed or cancelled, and the status bar says how many are waiting. If their document closes meanwhile, they are cancelled. When a browser read failure and an independent successful import arrive in the same frame, the successful import is processed before the failure alert is shown.
 
 ## Automation
 

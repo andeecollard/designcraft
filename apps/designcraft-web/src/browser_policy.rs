@@ -102,3 +102,55 @@ mod batch_tests {
         assert_eq!(success.as_mut().poll(&mut Context::from_waker(Waker::noop())), Poll::Ready(Ok(vec![3, 1])));
     }
 }
+
+/// Process successful deliveries before read-failure alerts can block their import.
+pub(crate) fn logic_with_read_failures(app: &mut designcraft_ui_egui::DesignApp, ctx: &egui::Context, unread: Vec<(Vec<String>, String)>) {
+    app.logic(ctx);
+    for (names, error) in unread {
+        app.import_read_failed(&names, &error);
+    }
+}
+
+#[cfg(test)]
+mod delivery_tests {
+    use designcraft_engine::Session;
+    use designcraft_ui_egui::{DesignApp, ImportedFile, Inbox, Services};
+    use serde_json::json;
+
+    #[test]
+    fn a_read_failure_does_not_cancel_an_independent_successful_import() {
+        for count in [1, 2] {
+            let inbox = Inbox::default();
+            let mut app = DesignApp::new(Session::new(), Services { inbox: Some(inbox.clone()), ..Default::default() });
+            app.run("file.new", json!({})).unwrap();
+            let ctx = egui::Context::default();
+            // Complete the font/layout startup before delivering files, as in an active browser.
+            for _ in 0..2 {
+                let mut output = ctx.run_ui(egui::RawInput::default(), |ui| app.logic(ui.ctx()));
+                output.textures_delta.clear();
+            }
+            let request = app.import_request("drop");
+            for index in 0..count {
+                inbox.lock().unwrap().push(ImportedFile {
+                    request: request.clone(),
+                    name: format!("successful-{index}.svg"),
+                    bytes: br##"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10" fill="#ff0000"/></svg>"##
+                        .to_vec(),
+                });
+            }
+            let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                super::logic_with_read_failures(&mut app, ui.ctx(), vec![(vec!["unreadable.png".into()], "read failed".into())]);
+            });
+            output.textures_delta.clear();
+            assert_eq!(app.session.doc().unwrap().doc.assets.len(), 1);
+            if count == 2 {
+                assert!(app.session.loaded.is_some());
+                assert_eq!(app.session.loaded_queue.len(), 1);
+            }
+            let dialog = app.ui.dialog.as_ref().unwrap();
+            assert_eq!(dialog.id, "alert");
+            assert_eq!(dialog.fields["file"], "unreadable.png");
+            assert_eq!(dialog.fields["message"], "read failed");
+        }
+    }
+}

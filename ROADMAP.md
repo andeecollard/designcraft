@@ -1,5 +1,7 @@
 # DesignCraft roadmap
 
+- MP4: Process successful browser imports before reporting independent read failures, preserving single-file imports and image queues when both arrive in one frame.
+
 - MP2: PR review fixes: atomic browser drop reads, localized placement hints and cancellation status, recoverable Contact Sheet validation, and stale cursor cleanup after Undo.
 
 - MP1: Multi-image placement queues, arrow-adjusted drag grids, and configurable contact sheets across new pages; atomic batch validation and one-step grid/contact-sheet undo. See [usage and automation](docs/multi-image-placement.md).
